@@ -42,7 +42,7 @@ class FT232R_PortList:
     self.tms1 = tms1
     self.tdi1 = tdi1
     self.tdo1 = tdo1
-  
+
   def output_mask(self):
     return (1 << self.tck0) | (1 << self.tms0) | (1 << self.tdi0) | \
            (1 << self.tck1) | (1 << self.tms1) | (1 << self.tdi1)
@@ -60,7 +60,7 @@ class FT232R_PortList:
                               ((tck & 1) << self.tck1) | ((tms & 1) << self.tms1) | ((tdi & 1) << self.tdi1))
     else:
       raise InvalidChain()
-  
+
   def chain_portlist(self, chain=0):
     """Returns a JTAG_PortList object for the specified chain"""
     if chain == 0:
@@ -80,7 +80,7 @@ class JTAG_PortList:
     self.tms = tms
     self.tdi = tdi
     self.tdo = tdo
-  
+
   def format(self, tck, tms, tdi):
     return struct.pack('B', ((tck & 1) << self.tck) | ((tms & 1) << self.tms) | ((tdi & 1) << self.tdi))
 
@@ -92,11 +92,11 @@ class FT232R:
     self.serial = handle.serial
     self.synchronous = None
     self.write_buffer = b""
-    self.portlist = FT232R_PortList(7, 6, 5, 4, 3, 2, 1, 0)
+    self.portlist = FT232R_PortList(2, 3, 0, 1, 4, 5, 6, 7)
     self.setSyncMode()
     self.handle.purgeBuffers()
-    
-  def __enter__(self): 
+
+  def __enter__(self):
     return self
 
   # Be sure to close the opened handle, if there is one.
@@ -104,11 +104,11 @@ class FT232R:
   def __exit__(self, exc_type, exc_value, traceback):
     self.close()
     return False
-  
+
   def close(self):
     with self.mutex:
       self.handle.close()
-  
+
   def setSyncMode(self):
     """Put the FT232R into Synchronous mode."""
     self.handle.setBitMode(self.portlist.output_mask(), 0)
@@ -120,7 +120,7 @@ class FT232R:
     self.handle.setBitMode(self.portlist.output_mask(), 0)
     self.handle.setBitMode(self.portlist.output_mask(), 1)
     self.synchronous = False
-  
+
   def purgeBuffers(self):
     self.handle.purgeBuffers()
 
@@ -130,14 +130,14 @@ class FT232R:
     #  SIO_1 = CBUS1 = input
     #  CS    = CBUS2 = output
     #  SC    = CBUS3 = output
-    
+
     SIO_0 = 0
     SIO_1 = 1
     CS    = 2
     SC    = 3
     read_mask = ( (1 << SC) | (1 << CS) | (0 << SIO_1) | (0 << SIO_0) ) << 4
     CBUS_mode = 0x20
-    
+
     # set up I/O and start conversion:
     pin_state = (sc << SC) | (cs << CS)
     self.handle.setBitMode(read_mask | pin_state, CBUS_mode)
@@ -146,16 +146,16 @@ class FT232R:
     SIO_0 = 0
     SIO_1 = 1
     data = self.handle.getBitMode()
-    return (((data >> SIO_0) & 1), ((data >> SIO_1) & 1)) 
-    
+    return (((data >> SIO_0) & 1), ((data >> SIO_1) & 1))
+
   def write(self, data):
     with self.mutex:
       self.handle.write(data)
-    
+
   def read(self, size, timeout):
     with self.mutex:
       return self.handle.write(size, timeout)
-    
+
   def flush(self):
     with self.mutex:
       """Write all data in the write buffer and purge the FT232R buffers"""
@@ -164,11 +164,11 @@ class FT232R:
       self.write_buffer = b""
       self.setSyncMode()
       self.handle.purgeBuffers()
-  
+
   def read_data(self, num):
     with self.mutex:
       """Read num bytes from the FT232R and return an array of data."""
-      
+
       if num == 0:
         self.flush()
         return b""
@@ -186,41 +186,41 @@ class FT232R:
 
       while len(write_buffer) > 0:
         bytes_to_write = min(len(write_buffer), 3072)
-        
+
         self.write(write_buffer[:bytes_to_write])
         write_buffer = write_buffer[bytes_to_write:]
-        
+
         data = data + self.handle.read(bytes_to_write, 3)
-        
+
       return data
 
   def read_temps(self):
     with self.mutex:
-      
+
       # clock SC with CS high:
       self._setCBUSBits(0, 1)
       self._setCBUSBits(1, 1)
       self._setCBUSBits(0, 1)
       self._setCBUSBits(1, 1)
-      
+
       # drop CS to start conversion:
       self._setCBUSBits(0, 0)
-      
+
       code0 = 0
       code1 = 0
-      
+
       for i in range(16):
         self._setCBUSBits(1, 0)
         (sio_0, sio_1) = self._getCBUSBits()
         code0 |= sio_0 << (15 - i)
         code1 |= sio_1 << (15 - i)
         self._setCBUSBits(0, 0)
-      
+
       # assert CS and clock SC:
       self._setCBUSBits(0, 1)
       self._setCBUSBits(1, 1)
       self._setCBUSBits(0, 1)
-      
+
       if code0 == 0xFFFF or code0 == 0: temp0 = None
       else:
         if (code0 >> 15) & 1 == 1: code0 -= (1 << 16)
@@ -229,10 +229,10 @@ class FT232R:
       else:
         if (code1 >> 15) & 1 == 1: code1 -= (1 << 16)
         temp1 = (code1 >> 2) * 0.03125
-      
+
       return (temp0, temp1)
-      
-      
+
+
 class FT232R_D2XX:
   def __init__(self, deviceid):
     import d2xx
@@ -248,8 +248,8 @@ class FT232R_D2XX:
       except: pass
     if self.handle == None: raise Exception("Can not open the specified device")
     self.handle.setBaudRate(3000000)
-    
-  def __enter__(self): 
+
+  def __enter__(self):
     return self
 
   # Be sure to close the opened handle, if there is one.
@@ -257,7 +257,7 @@ class FT232R_D2XX:
   def __exit__(self, exc_type, exc_value, traceback):
     self.close()
     return False
-  
+
   def close(self):
     if self.handle is None:
       return
@@ -265,12 +265,12 @@ class FT232R_D2XX:
       self.handle.close()
     finally:
       self.handle = None
-  
+
   def purgeBuffers(self):
     if self.handle is None:
       raise DeviceNotOpened()
     self.handle.purge(0)
-  
+
   def setBitMode(self, mask, mode):
     if self.handle is None:
       raise DeviceNotOpened()
@@ -280,7 +280,7 @@ class FT232R_D2XX:
     if self.handle is None:
       raise DeviceNotOpened()
     return self.handle.getBitMode()
-    
+
   def write(self, data):
     if self.handle is None:
       raise DeviceNotOpened()
@@ -290,7 +290,7 @@ class FT232R_D2XX:
       write_size = min(4096, size - offset)
       ret = self.handle.write(data[offset : offset + write_size])
       offset = offset + ret
-    
+
   def read(self, size, timeout):
     if self.handle is None:
       raise DeviceNotOpened()
@@ -302,8 +302,8 @@ class FT232R_D2XX:
       data = data + ret
       offset = offset + len(ret)
     return data
-    
-      
+
+
 class FT232R_PyUSB:
   def __init__(self, deviceid, takeover):
     import usb
@@ -347,9 +347,9 @@ class FT232R_PyUSB:
       if permissionproblem:
         raise Exception("Can not open the specified device, possibly due to insufficient permissions")
       raise Exception("Can not open the specified device")
-    self.handle.controlMsg(0x40, 3, None, 0, 0, 1000)
-    
-  def __enter__(self): 
+    self.handle.controlMsg(0x40, 3, None, 0, 0)
+
+  def __enter__(self):
     return self
 
   # Be sure to close the opened handle, if there is one.
@@ -357,7 +357,7 @@ class FT232R_PyUSB:
   def __exit__(self, exc_type, exc_value, traceback):
     self.close()
     return False
-  
+
   def close(self):
     if self.handle is None:
       return
@@ -367,23 +367,23 @@ class FT232R_PyUSB:
       self.handle.reset()
     finally:
       self.handle = None
-  
+
   def purgeBuffers(self):
     if self.handle is None:
       raise DeviceNotOpened()
-    self.handle.controlMsg(0x40, 0, None, 1, self.index, 1000)
-    self.handle.controlMsg(0x40, 0, None, 2, self.index, 1000)
-    
+    self.handle.controlMsg(0x40, 0, None, 1, self.index)
+    self.handle.controlMsg(0x40, 0, None, 2, self.index)
+
   def setBitMode(self, mask, mode):
     if self.handle is None:
       raise DeviceNotOpened()
-    self.handle.controlMsg(0x40, 0xb, None, (mode << 8) | mask, self.index, 1000)
-  
+    self.handle.controlMsg(0x40, 0xb, None, (mode << 8) | mask, self.index)
+
   def getBitMode(self):
     if self.handle is None:
       raise DeviceNotOpened()
-    return struct.unpack("B", bytes(bytearray(self.handle.controlMsg(0xc0, 0xc, 1, 0, self.index, 1000))))[0]
-    
+    return self.handle.controlMsg(0xc0, 0xc, 1, 0, self.index)[0]
+
   def write(self, data):
     if self.handle is None:
       raise DeviceNotOpened()
@@ -391,9 +391,9 @@ class FT232R_PyUSB:
     offset = 0
     while offset < size:
       write_size = min(4096, size - offset)
-      ret = self.handle.bulkWrite(self.outep, data[offset : offset + write_size], 1000)
+      ret = self.handle.bulkWrite(self.outep, data[offset : offset + write_size])
       offset = offset + ret
-    
+
   def read(self, size, timeout):
     if self.handle is None:
       raise DeviceNotOpened()
@@ -401,7 +401,7 @@ class FT232R_PyUSB:
     data = b""
     offset = 0
     while offset < size and time.time() < timeout:
-      ret = bytes(bytearray(self.handle.bulkRead(self.inep, min(64, size - offset + 2), 1000)))
-      data = data + ret[2:]
+      ret = self.handle.bulkRead(self.inep, min(64, size - offset + 2))
+      data = data + struct.pack("%dB" % (len(ret) - 2), *ret[2:])
       offset = offset + len(ret) - 2
     return data

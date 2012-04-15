@@ -51,7 +51,9 @@ irlength_lut = {0x403d093: 6, 0x401d093: 6, 0x4008093: 6, 0x5057093: 16, 0x50590
 name_lut = {0x403d093: 'Spartan 6 LX150T', 0x401d093: 'Spartan 6 LX150', 0x5059093: 'Unknown', 0x5057093: 'Unknown'}
 
 class JTAG:
-  def __init__(self, ft232r, chain):
+  def __init__(self, proxy, name, ft232r, tap, chain):
+    self.proxy = proxy
+    self.name = name
     self.ft232r = ft232r
     self.chain = chain
     self.deviceCount = None
@@ -61,15 +63,18 @@ class JTAG:
     self.current_part = 0
     self._tckcount = 0
     self.portlist = ft232r.portlist.chain_portlist(chain)
-    self.tap = TAP(self.jtagClock)
+    self.tap = tap
 
-    
+  def log(self, msg):
+    """Log."""
+    self.proxy.log(self.name + ": JTAG: "+msg, 700)
+
   def detect(self):
     """Detect all devices on the JTAG chain. Call this after open."""
     self.deviceCount = None
     self.idcodes = None
     self.irlengths = None
-    
+
     retries_left = 5
     while retries_left > 0:
       self.deviceCount = self._readDeviceCount()
@@ -79,35 +84,35 @@ class JTAG:
         break
     if self.deviceCount is None or self.deviceCount == 0:
       raise NoDevicesDetected
-    
+
     self._readIdcodes()
     self._processIdcodes()
-    
+
     self.reset()
     self.part(0)
     self.ft232r.flush()
-  
+
   def part(self, part):
     """Change the active part."""
     self.current_part = part
-  
+
   def instruction(self, instruction):
     """Sets the current_instructions to a new instruction.
     Accepts an integer instruction and builds an array of bits.
     """
     if self.irlengths is None:
       raise ChainNotProperlyDetected()
-    
+
     start = sum(self.irlengths[self.current_part+1:])
     end = start + self.irlengths[self.current_part]
-    
+
     for i in range(len(self.current_instructions)):
       if i >= start and i < end:
         self.current_instructions[i] = instruction & 1
         instruction >>= 1
       else:
         self.current_instructions[i] = 1
-  
+
   def reset(self):
     """Reset JTAG chain"""
     total_ir = 100 # TODO: Should be 1000
@@ -117,11 +122,11 @@ class JTAG:
     self.current_instructions = [1] * total_ir
     #self.shift_ir()
     self.tap.reset()
-  
+
   def shift_ir(self, read=False):
     self.tap.goto(TAP.SELECT_IR)
     self.tap.goto(TAP.SHIFT_IR)
-    
+
     for bit in self.current_instructions[:-1]:
       self.jtagClock(tdi=bit)
     self.jtagClock(tdi=self.current_instructions[-1], tms=1)
@@ -131,16 +136,23 @@ class JTAG:
 
     if read:
       return self.read_tdo(len(self.current_instructions)+self._tckcount)[:-self._tckcount]
-  
+
   def read_ir(self):
     return self.shift_ir(read=True)
-  
+
   # TODO: Doesn't work correctly if not operating on the last device in the chain
-  def shift_dr(self, bits, read=False):
+  def shift_dr(self, bits, filterbit=False, read=False):
     self.tap.goto(TAP.SELECT_DR)
     self.tap.goto(TAP.SHIFT_DR)
+    if read:
+      if self.deviceCount == None:
+        self.deviceCount = 1
+      i = (self.deviceCount - 1) - self.current_part
+    else:
+      i = self.current_part
 
-    bits += [0] * self.current_part
+    bits += [0] * i
+    self.log("shift_dr("+str(len(bits))+") tdi = "+str(bits)+"\n")
 
     for bit in bits[:-1]:
       self.jtagClock(tdi=bit)
@@ -150,26 +162,31 @@ class JTAG:
     self.tap.goto(TAP.IDLE)
 
     if read:
-      return self.read_tdo(len(bits)+self._tckcount)[:len(bits)-self.current_part]
-  
-  def read_dr(self, bits):
-    return self.shift_dr(bits, read=True)
-  
+        if filterbit:
+            return self.read_tdo(len(bits)+self._tckcount)[i:len(bits)]
+        else:
+            return self.read_tdo(len(bits)+self._tckcount)[:len(bits)]
+
+  def read_dr(self, bits, filterbit):
+    logbits =  self.shift_dr(bits, filterbit, read=True)
+    self.log("read_dr("+str(len(logbits))+") = "+str(logbits)+"\n")
+    return logbits
+
   def read_tdo(self, num):
     """Reads num bits from TDO, and returns the bits as an array."""
     data = self.ft232r.read_data(num)
     bits = []
     for n in range(len(data)//3):
       bits.append((struct.unpack("B", data[n*3+2:n*3+3])[0] >> self.portlist.tdo)&1)
-    
+
     return bits
-  
+
   def runtest(self, tckcount):
     """Clock TCK in the IDLE state for tckcount cycles"""
     self.tap.goto(TAP.IDLE)
     for i in range(tckcount):
       self.jtagClock(tms=0)
-      
+
   def bitstream_preparation_thread(self, bitstream, buffer):
     python2 = sys.hexversion // 0x1000000 < 3
     bytetotal = len(bitstream)
@@ -197,16 +214,16 @@ class JTAG:
                                     val5, val5 | 0x88, val4, val4 | 0x88, \
                                     val3, val3 | 0x88, val2, val2 | 0x88, \
                                     val1, val1 | 0x88, val0, val0 | 0x88)
-      buffer.put(chunk)               
+      buffer.put(chunk)
     buffer.put(None)
-  
+
   def load_bitstream(self, bitstream, progressCallback=None):
     self.tap.goto(TAP.SELECT_DR)
     self.tap.goto(TAP.SHIFT_DR)
     self.ft232r.flush()
-    
+
     self.ft232r.setAsyncMode()
-    
+
     start_time = time.time()
     last_update = 0
 
@@ -216,45 +233,45 @@ class JTAG:
     thread = threading.Thread(None, self.bitstream_preparation_thread, "bitstreamprepare", kwargs = {"bitstream": bitstream, "buffer": buffer})
     thread.daemon = True
     thread.start()
-    
+
     while True:
       chunk = buffer.get()
       if chunk == None: break
       self.ft232r.write(chunk)
       written = written + len(chunk) / 16
-      
+
       if time.time() > (last_update + 3) and progressCallback:
         progressCallback(start_time, time.time(), written, bytetotal)
         last_update = time.time()
-    
+
     self.ft232r.setSyncMode()
     self.ft232r.purgeBuffers()
-    
+
     d = struct.unpack("B", bitstream[-1:])[0]
     for i in range(7, 0, -1):
       self.jtagClock(tdi=(d >> i) & 1)
     self.jtagClock(tdi=d & 1, tms=1)
-    
+
     self.tap.goto(TAP.IDLE)
     self.ft232r.flush()
-  
+
   def _formatJtagClock(self, tms=0, tdi=0):
     return self._formatJtagState(0, tms, tdi) + self._formatJtagState(1, tms, tdi)
-  
+
   def _formatJtagState(self, tck, tms, tdi):
     return self.portlist.format(tck, tms, tdi)
-  
-  def jtagClock(self, tms=0, tdi=0):    
+
+  def jtagClock(self, tms=0, tdi=0):
     self.ft232r.write_buffer += self._formatJtagState(0, tms, tdi)
     self.ft232r.write_buffer += self._formatJtagState(1, tms, tdi)
     self.ft232r.write_buffer += self._formatJtagState(1, tms, tdi)
 
     self.tap.clocked(tms)
     self._tckcount += 1
-  
+
   def parseByte(self, bits):
     return (bits[7] << 7) | (bits[6] << 6) | (bits[5] << 5) | (bits[4] << 4) | (bits[3] << 3) | (bits[2] << 2) |  (bits[1] << 1) | bits[0]
-  
+
   def _readDeviceCount(self):
     deviceCount = None
     #self.tap.reset()
@@ -272,7 +289,7 @@ class JTAG:
 
 
     # Fill with 1s to detect chain length
-    data = self.read_dr([1]*100)
+    data = self.read_dr([1]*100, False)
 
     # Now see how many devices there were.
     for i in range(0, len(data)-1):
@@ -281,7 +298,7 @@ class JTAG:
         break
 
     return deviceCount
-  
+
   def _readIdcodes(self):
     if self.deviceCount is None:
       raise NoDevicesDetected()
@@ -292,8 +309,8 @@ class JTAG:
     self.reset()
     self.part(0)
 
-    data = self.read_dr([1]*32*self.deviceCount)
-    
+    data = self.read_dr([1]*32*self.deviceCount, False)
+
     for d in range(self.deviceCount):
       idcode = self.parseByte(data[0:8])
       idcode |= self.parseByte(data[8:16]) << 8
@@ -302,7 +319,7 @@ class JTAG:
       data = data[32:]
 
       self.idcodes.insert(0, idcode)
-  
+
   def _processIdcodes(self):
     if self.idcodes is None:
       raise IDCodesNotRead()
@@ -316,7 +333,7 @@ class JTAG:
       else:
         self.irlengths = None
         raise UnknownIDCode(idcode)
-  
+
   @staticmethod
   def decodeIdcode(idcode):
     if (idcode & 1) != 1:
